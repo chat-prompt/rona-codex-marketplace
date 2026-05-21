@@ -1,0 +1,20 @@
+{
+  "name": "rona",
+  "interface": {
+    "displayName": "Rona"
+  },
+  "plugins": [
+    {
+      "name": "rona-review",
+      "source": {
+        "source": "local",
+        "path": "./plugins/rona-review"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

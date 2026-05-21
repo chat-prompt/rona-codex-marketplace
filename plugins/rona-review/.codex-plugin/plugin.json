@@ -1,0 +1,16 @@
+{
+  "name": "rona-review",
+  "version": "0.1.0",
+  "description": "Rona 맞춤 스킬 사용 후 후기 회수 — 같은 폴더의 .rona-skill.json 마커로 리뷰 대상 식별",
+  "author": { "name": "Rona", "url": "https://rona.so" },
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Rona Review",
+    "shortDescription": "Rona 맞춤 스킬 후기 작성",
+    "longDescription": "맞춤 스킬을 실제 업무에 적용한 직후, 4차원(사용 도구·외부 출처·시도와 실패·로나 스킬의 부족한 점)으로 정리하고 셀프 인터뷰로 노력 간극을 보강한 뒤 마스킹된 후기를 로나에 제출합니다.",
+    "developerName": "Rona",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"]
+  }
+}
