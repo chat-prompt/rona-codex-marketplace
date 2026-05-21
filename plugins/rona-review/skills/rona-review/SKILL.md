@@ -161,7 +161,7 @@ jq -r 'select(.type == "user") | .message.content[]?
 
 ## STEP 3. 인터뷰 — 자기기입 + AI 보강 2단계
 
-> 인터뷰는 **두 단계로 끊김 없이** 진행한다. STAGE 1에서 파트너가 인지·언어화한 ①②③④를 먼저 받고, STAGE 2에서 STAGE 1 응답 + STEP 2 자동 추출을 대조해 **AI 관점에서 사람이 놓친 행동·출처를 회수**한다. 총 4~5분, Tier B 포함 5~6분.
+> 인터뷰는 **두 단계로 끊김 없이** 진행한다. STAGE 1에서 파트너가 인지·언어화한 ①②③④를 먼저 받고, STAGE 2에서 STAGE 1 응답 + STEP 2 자동 추출을 대조해 **AI 관점에서 사람이 놓친 행동·출처를 회수**한다. 총 8~9분, Tier B 포함 9~10분.
 
 ### 3-0. 동작 원칙 (반드시 준수)
 
@@ -242,14 +242,22 @@ STAGE 1 응답 + STEP 2 자동 추출을 대조해 **사람이 놓친 행동·�
 
 자기기입 단계에서 보여주지 않았던 자동 추출 결과를 *이 문항 안에 자연어 한 줄*로 인라인 박는다. 메타 용어("임팩트 상위 시나리오", "WebSearch", "context7" 등)는 한국어로 풀어쓴다 — "**웹 검색 N번 / 외부 블로그 N개 정독에 N분**" 같이.
 
-**[보강 1/1] 로그 기반 drill + ③ 보강 — 90초**:
+**[보강 1/1] 로그 기반 drill + ③ 보강 — 5분 내외**:
 
 ```
 로그를 봤더니, 이번 작업에서 [웹 검색 8번 / 외부 블로그 3개 정독에 25분]쯤
 쓰셨더라고요.
 
-그 25분 동안 뭘 찾으려 하셨고, 어떻게 찾아가셨어요?
-그리고 아까 안 적은 행동·출처가 있으면 같이 알려주세요.
+그 25분 동안 뭘 찾아가셨는지, 기억나는 범위에서 단계별로 꼼꼼하게
+풀어주세요. 한두 줄 요약 말고, 1·2·3… 순서대로 적어주시면 됩니다.
+
+  예)
+  1. 처음에 ___ 키워드로 검색 → 결과가 어색
+  2. ___ 로 바꿔서 다시 검색 → ___ 블로그 발견
+  3. 그걸 보고 "아, 이렇게 만들면 되겠다" 방향 잡힘
+  ...
+
+아까 안 적은 행동·출처(다른 LLM·동료·문서)도 함께 알려주세요.
 ```
 
 - "어떻게 찾아가셨어요?" — *방법* 회수가 핵심. ②(카테고리 분포)와 다른 *narrative 깊이*를 받는다.
@@ -392,7 +400,7 @@ print('PII regex sweep done')
 
 ## STEP 6. 로나에 전송
 
-v1 `POST /api/devlogs` API 그대로 재사용. 서버 코드 변경 없음.
+전용 엔드포인트 `POST /api/skill-reviews` 사용. 파트너 자문단 리뷰는 `rona.partner_skill_reviews` 테이블에 적재된다. (이전에는 v1 `/api/devlogs` 에 기생했으나, ID 공간 어긋남 + 의미 충돌로 분리됨.)
 
 ### 메타데이터 HTML 코멘트 삽입
 
@@ -437,29 +445,29 @@ v1 `POST /api/devlogs` API 그대로 재사용. 서버 코드 변경 없음.
 ### 전송 절차
 
 1. `./rona-review-preview.md`를 Write로 그대로 저장 (heredoc 금지)
-2. **STEP 1에서 추출한 `practice_id`와 `student_token`을 명령에 직접 박아 넣어** Python으로 POST:
+2. **STEP 1에서 추출한 마커의 `practice_id` 값을 `install_token` 으로 박아 넣어** Python으로 POST:
 
 ```bash
-# 예시 — STEP 1에서 읽은 마커 파일 값을 직접 박는다
+# 예시 — STEP 1에서 읽은 마커 파일의 practice_id 값(실제는 install_token)을 직접 박는다
 python3 -c "
 import json, urllib.request
 md = open('./rona-review-preview.md').read()
 data = json.dumps({
-  'practice_id': '<STEP_1_PRACTICE_ID>',
-  'student_token': '<STEP_1_STUDENT_TOKEN>',
+  'install_token': '<STEP_1_INSTALL_TOKEN>',
   'tool_used': 'rona-review',
   'markdown_content': md
 }).encode()
-req = urllib.request.Request('https://rona.so/api/devlogs',
+req = urllib.request.Request('https://rona.so/api/skill-reviews',
   data=data, headers={'Content-Type': 'application/json'})
 res = urllib.request.urlopen(req)
 print(res.read().decode())
 "
 ```
 
-- API URL은 production 고정: `https://rona.so/api/devlogs`
+- API URL은 production 고정: `https://rona.so/api/skill-reviews`
+- 마커 파일의 키 이름은 호환을 위해 `practice_id` 그대로 유지 — 값은 실제 `install_token` 이며 엔드포인트는 `install_token`/`practice_id` 둘 다 받음
+- `student_token` 필드는 보내지 않는다 — 파트너 자문단 리뷰는 사람 식별이 목적이 아니라 스킬에 대한 피드백이므로
 - Windows에서 `python3`이 없으면 `python` 또는 `py`로 대체
-- 마커 파일이 단일 소스 — install 빌더는 마커 파일만 깔아주면 됨 (SKILL.md placeholder 치환 불필요)
 
 ### 성공 시
 
@@ -471,23 +479,21 @@ print(res.read().decode())
 
 ```
 발송에 실패했어요. 수동 업로드 URL로 보내주세요:
-https://rona.so/upload?practice_id=<STEP_1_PRACTICE_ID>
+https://rona.so/upload?install_token=<STEP_1_INSTALL_TOKEN>
 
 위 URL에서 ./rona-review-preview.md 파일을 업로드하면 됩니다.
 ```
 
+(업로드 페이지가 `install_token` 쿼리를 아직 처리하지 않으면 운영자가 Neon Console에서 수동 적재.)
+
 ---
 
-## 회귀 방지 — v1 본질 기능 유지
+## 데이터 흐름 — 다운스트림 없음 (수집 전용)
 
-`tool_used: "rona-review"`로 식별. v1 후속 플로우:
+`POST /api/skill-reviews` 는 `rona.partner_skill_reviews` 테이블에 row 만 적재한다.
+v1 devlogs 의 후속 플로우(체크포인트 동기화, 챌린지 인증, Mixpanel `devlog_upload`, Slack `## 소감` 알림)는 **호출되지 않는다** — 파트너 자문단 리뷰는 학생 진도가 아니라 스킬 자체에 대한 피드백이므로 의도된 격리. 분석은 운영자가 Neon Console 직접 조회 또는 추후 신설될 `/admin/skill-reviews` 페이지에서 수행.
 
-- **`syncCheckpointFromDevlog`**: rona-review md에는 `### N단계:` 헤더가 없어 `extractPracticeSteps` 빈 배열 → 빈 stepsCompleted로 안전 통과 (의도된 동작)
-- **`recordPracticeActivity`**: 챌린지 자동 인증 트리거 안 됨 (rona-review는 진도 추적이 목적 아니므로 OK)
-- **`trackServer("devlog_upload")`**: `tool_used: "rona-review"`로 Mixpanel 정상 발생
-- **`notifyFeedbackToSlack`**: `## 소감` 헤더 없어 silent skip (의도된 동작 — 별도 알림 모듈로 분리 예정)
-
-v1 파서(`parseDevlogMarkdown`)는 HTML 코멘트를 무시하므로 메타데이터 보존 + 회귀 0.
+RONA_REVIEW_META HTML 코멘트는 엔드포인트에서 파싱되어 `stage1_self_report` / `stage2_ai_probe` / `axis_summary` / `discrepancies` / `session_file` / `masked_count` / `submitted_at` 컬럼으로 분해 저장된다. 파싱 실패 시에도 `markdown_content` 는 무손실 보존.
 
 ---
 
