@@ -1,0 +1,16 @@
+{
+  "name": "rona-launcher",
+  "version": "0.1.0",
+  "description": "Rona 맞춤 실습을 codex 안에서 받아 수행하거나, 짧은 대화로 맞춤 실습을 요청하는 얇은 런처. rona MCP로 실습을 가져와 그 자리에서 진행한다.",
+  "author": { "name": "Rona", "url": "https://rona.so" },
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Rona Launcher",
+    "shortDescription": "Rona 맞춤 실습 받아 수행 + 요청",
+    "longDescription": "이미 받은 맞춤 실습이 있으면 rona MCP의 get_practice 로 가져와 그 지침대로 함께 진행하고, 아직 없으면 짧은 인터뷰로 request_skill 을 통해 맞춤 실습을 요청해 만들어지면 이어서 진행합니다. 실습 내용은 Rona 서버가 만들고, 이 런처는 라우팅·인터뷰·진행 표시만 합니다.",
+    "developerName": "Rona",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"]
+  }
+}
