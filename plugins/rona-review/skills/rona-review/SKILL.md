@@ -455,7 +455,12 @@ print('PII regex sweep done')
   ],
   "session_file": "<basename>",
   "masked_count": N,
-  "submitted_at": "ISO8601"
+  "submitted_at": "ISO8601",
+  "completion_source": {
+    "source": "closing",
+    "trigger_shown": false,
+    "dropout_reason": null
+  }
 }
 -->
 ```
@@ -527,7 +532,11 @@ https://rona.so/upload?install_token=<STEP_1_INSTALL_TOKEN>
 `POST /api/skill-reviews` 는 `rona.partner_skill_reviews` 테이블에 row 만 적재한다.
 v1 devlogs 의 후속 플로우(체크포인트 동기화, 챌린지 인증, Mixpanel `devlog_upload`, Slack `## 소감` 알림)는 **호출되지 않는다** — 파트너 자문단 리뷰는 학생 진도가 아니라 스킬 자체에 대한 피드백이므로 의도된 격리. 분석은 운영자가 Neon Console 직접 조회 또는 추후 신설될 `/admin/skill-reviews` 페이지에서 수행.
 
-RONA_REVIEW_META HTML 코멘트는 엔드포인트에서 파싱되어 `stage1_self_report` / `stage2_ai_probe` / `axis_summary` / `discrepancies` / `session_file` / `masked_count` / `submitted_at` 컬럼으로 분해 저장된다. 파싱 실패 시에도 `markdown_content` 는 무손실 보존.
+RONA_REVIEW_META HTML 코멘트는 엔드포인트에서 파싱되어 `stage1_self_report` / `stage2_ai_probe` / `axis_summary` / `discrepancies` / `session_file` / `masked_count` / `submitted_at` / `completion_source` 컬럼으로 분해 저장된다. 파싱 실패 시에도 `markdown_content` 는 무손실 보존.
+
+`completion_source` 는 이 후기가 어디서 왔는지를 호출 맥락으로 판정해 채운다. 끝까지 가지 않고 중간에 마친 흐름(설치 스킬의 "이거면 됐어요 / 다른 방식으로 갈게요" 종료 후 회수)에서 호출됐으면 `source` 를 `"stopword"` 로 두고, 들은 이탈사유 한 줄을 `dropout_reason` 에 담고 `trigger_shown` 을 `true` 로 둔다. 정상적으로 완주하고 마무리 후기로 넘어온 흐름이면 `source` 를 `"closing"`, `trigger_shown` 을 `false`, `dropout_reason` 을 `null` 로 둔다. 이 필드는 출처 분류 1개만 채우며, 설문 4축(사용 도구 / 외부 출처 / 시도와 실패 / 아쉬운 점) 내용은 손대지 않는다.
+
+`dropout_reason` 한 줄은 META 가 in-band JSON 이라는 점을 지켜 안전하게 적는다. 큰따옴표(`"`)·개행은 한 줄 평문으로 풀어 쓰고(필요하면 작은따옴표나 풀어쓴 표현으로 바꾼다), JSON 종결자와 겹치는 `-->` 같은 문자열은 넣지 않는다. JSON 문자열로 안전히 이스케이프된 한 줄이라야 META 전체가 깨지지 않고 후기 구조화 필드가 보존된다.
 
 ---
 
