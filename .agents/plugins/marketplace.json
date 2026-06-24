@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "name": "rona-launcher",
+      "name": "rona",
       "source": {
         "source": "local",
-        "path": "./plugins/rona-launcher"
+        "path": "./plugins/rona"
       },
       "policy": {
         "installation": "AVAILABLE",
