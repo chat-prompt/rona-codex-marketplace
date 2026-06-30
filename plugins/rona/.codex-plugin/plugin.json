@@ -1,10 +1,11 @@
 {
   "name": "rona",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Rona 맞춤 실습을 codex 안에서 받아 수행하거나, 짧은 대화로 맞춤 실습을 요청하는 얇은 런처. rona MCP로 실습을 가져와 그 자리에서 진행한다.",
   "author": { "name": "Rona", "url": "https://rona.so" },
   "license": "MIT",
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Rona",
     "shortDescription": "Rona 맞춤 실습 받아 수행 + 요청",

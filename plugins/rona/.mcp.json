@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rona": {
+      "type": "streamable_http",
+      "url": "https://rona.so/api/mcp"
+    }
+  }
+}
