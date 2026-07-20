@@ -57,10 +57,22 @@ allowed-tools: [Read, Write, Bash, Glob]
      -not -path '*/.next/*' 2>/dev/null
    ```
 2. 발견 개수에 따라 분기:
-   - **0개**: 파트너에게 안내 — *"이 폴더에서 로나 스킬을 찾을 수 없어요. 로나 스킬을 install한 폴더에서 다시 실행해주세요."* → 종료
-   - **1개**: 자동으로 그 스킬 선택, `practice_id` + `student_token` + `title` 추출
+   - **0개**: **바로 "없음"으로 단정하지 말고 한 번 교차확인한다.** 여기서 오분기하면 후기가
+     아예 시작되지 않는 *조용한 회수 실패*가 된다. 셸 훅·alias·래퍼가 끼면 `find`가 빈 출력에
+     종료코드 1을 내는 일이 실제로 있었다(블라인드 테스트 2회 연속 관측 — 마커는 멀쩡히
+     존재했다). 다른 방식으로 한 번 더 본다:
+     ```bash
+     ls -d .claude/skills/*/.rona-skill.json 2>/dev/null
+     ls -a . 2>/dev/null | grep -c '^\.rona-skill\.json$'
+     ```
+     둘 다 비면 진짜 0개다 → 파트너에게 안내: *"이 폴더에서 로나 스킬을 찾을 수 없어요.
+     로나 스킬을 install한 폴더에서 다시 실행해주세요."* → 종료.
+     한쪽이라도 파일을 찾으면 **`find`가 실패한 것**이므로 그 결과로 진행하고 discrepancies에
+     남긴다: *"find 실패(셸 환경 추정) — 다른 방식으로 마커 탐지"*.
+   - **1개**: 자동으로 그 스킬 선택, `practice_id` + `student_token` + `title` + `installed_at` 추출
    - **여러 개**: 파트너에게 리스트 제시 — *"어느 스킬에 대한 리뷰인가요?"* + 번호 선택
-3. 선택된 스킬의 `practice_id`, `student_token`, `title`을 메모리에 보관 — 이후 STEP에서 사용
+3. 선택된 스킬의 `practice_id`, `student_token`, `title`, `installed_at`을 메모리에 보관 — 이후 STEP에서 사용
+   (`installed_at`은 STEP 2-2의 세션 파일 교차검증에 쓰인다 — 세션이 install 시점보다 먼저 시작될 수 없다는 하한선)
 
 ---
 
@@ -69,34 +81,333 @@ allowed-tools: [Read, Write, Bash, Glob]
 ### 2-1. 세션 디렉토리 찾기
 
 ```bash
-# 현재 프로젝트 경로를 -로 치환
-PROJECT_KEY=$(pwd | sed 's|/|-|g')
+# 현재 프로젝트 경로를 Claude Code 세션 폴더명 규칙대로 치환.
+# 주의: `/`만 바꾸면 안 된다 — Claude Code는 영숫자가 아닌 모든 문자(밑줄 `_`, 점 `.`,
+# 공백, 괄호 등)를 개별적으로 `-`로 치환한다. 예: `rona_practice` → `rona-practice`
+# (밑줄도 치환). `/`만 치환하면 밑줄 등이 남은 폴더를 가리켜 세션 디렉토리 자체가
+# 존재하지 않게 되고, 이후 STEP 2 전체가 조용히 빈 결과로 무력화된다(실측 확인됨).
+PROJECT_KEY=$(pwd | sed 's/[^A-Za-z0-9]/-/g')
 SESSION_DIR="$HOME/.claude/projects/$PROJECT_KEY"
+
+# 존재 확인 — 없으면 "매칭 0건"이 아니라 *경로 유도 실패*다. 둘을 구분하지 않으면
+# 원인(경로 규칙 오류)과 전혀 다른 진단이 discrepancies 에 적힌다.
+[ -d "$SESSION_DIR" ] || echo "SESSION_DIR_MISSING: $SESSION_DIR"
 ```
+
+`SESSION_DIR_MISSING`이 뜨면 자동 추출을 **시도하지 마라**. 파트너에게 *"이 폴더에서 진행한
+세션 기록을 찾지 못했어요 — 혹시 다른 폴더에서 작업하셨나요?"* 라고 묻는다.
+
+> **폴더를 알아냈다고 해서 "거기서 다시 실행하세요"라고 하지 마라 — 그러면 STEP 1이 깨진다.**
+> 마커 탐지는 `pwd` 기준 `-maxdepth 4`인데, 스킬이 하위 폴더에 설치돼 있으면 상위에서
+> 재실행할 때 마커가 depth 5가 되어 안 잡히고 *"로나 스킬을 찾을 수 없어요 → 종료"* 로
+> 빠진다(실측 라운드 8: 마커는 하위에서만, 세션은 상위에서만 보이는 교착). **마커 폴더와
+> 세션 폴더는 다를 수 있다** — 클로드코드를 상위 폴더에서 띄워놓고 하위 프로젝트를 작업하는
+> 건 흔한 사용 방식이다.
+>
+> 따라서 **재실행시키지 말고, STEP 1에서 이미 얻은 마커 정보는 그대로 둔 채 `SESSION_DIR`만
+> 그 폴더 기준으로 다시 계산한다**:
+> ```bash
+> WORK_DIR="<파트너가 말한 폴더의 절대경로>"
+> SESSION_DIR="$HOME/.claude/projects/$(printf '%s' "$WORK_DIR" | sed 's/[^A-Za-z0-9]/-/g')"
+> [ -d "$SESSION_DIR" ] || echo "여기도 없음: $SESSION_DIR"
+> ```
+> discrepancies에 남긴다: *"마커 폴더와 세션 폴더가 다름(작업은 상위 폴더에서 진행) —
+> SESSION_DIR 재계산"*.
+
+그래도 못 찾으면 자동 추출을 포기하고 STEP 3 진술로만 채우되
+discrepancies에 명시한다: *"세션 디렉토리 없음 — 자동 추출 불가, 진술로 대체"*.
 
 ### 2-2. 최신 세션 jsonl 선택
 
-- `$SESSION_DIR/*.jsonl` 중 `mtime` 기준 가장 최신 파일
-- `agent-*.jsonl` 제외
-- 크기 0 제외
+> **왜 mtime 단독으로 고르면 안 되는가**: 같은 프로젝트 폴더에서 여러 Claude 세션(다른 창·다른
+> 작업)이 동시에 열려 있으면, mtime이 가장 최신인 파일이 지금 이 스킬을 진행한 세션이 아닐 수
+> 있다. 실제로 이 오추출이 발생해 리뷰 데이터가 다른 세션 내용으로 채워진 사례가 있었다
+> (2026-07 rona-review 데이터 신뢰도 조사). 따라서 mtime만으로 확정하지 말고, 해당 세션이
+> **이 스킬을 실제로 다뤘다는 내용 증거**로 교차검증한다.
 
-```bash
-LATEST=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null \
-  | grep -v '/agent-' \
-  | head -1)
-```
+1. `installed_at` 이후 mtime을 가진 후보만 남긴다(설치 이전 세션은 이 스킬을 다룰 수 없다).
+   **날짜 파싱에 두 가지 함정이 있다 — 둘 다 실측으로 확인된 것이니 아래 형태를 그대로 쓸 것**:
+   - 마커의 `installed_at`은 `new Date().toISOString()` 산출이라 **항상 밀리초가 붙는다**
+     (`2026-07-20T09:00:00.000Z`). macOS `date -jf "%Y-%m-%dT%H:%M:%SZ"`는 밀리초를 파싱하지
+     못해 빈 문자열을 내고, 그 빈 값을 `[ "$MTIME" -ge "" ]`로 비교하면 zsh에서 **참**이 되어
+     하한선 필터가 조용히 전량 통과로 무력화된다. → 소수점 이하를 먼저 잘라낸다.
+   - 마커는 UTC(`Z`)인데 `-u` 없이 파싱하면 로컬시각으로 해석해 KST 기준 **9시간** 어긋난다.
+     → `-u`를 반드시 붙인다.
+   ```bash
+   # 밀리초 제거 후 UTC로 파싱. 실패해도 빈 값이 비교로 새지 않게 명시적으로 처리한다.
+   INSTALLED_CLEAN=$(printf '%s' "$INSTALLED_AT" | sed 's/\.[0-9]*Z$/Z/')
+   INSTALLED_EPOCH=$(date -u -d "$INSTALLED_CLEAN" +%s 2>/dev/null \
+     || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$INSTALLED_CLEAN" +%s 2>/dev/null \
+     || true)
+
+   if [ -z "$INSTALLED_EPOCH" ]; then
+     # 파싱 실패 — 하한선을 포기하고 진행하되 반드시 discrepancies 에 남긴다.
+     # (빈 값을 그대로 비교에 쓰면 조용히 전량 통과하므로 0으로 명시한다.)
+     INSTALLED_EPOCH=0
+     LOWER_BOUND_FAILED=1
+   fi
+
+   CANDIDATES=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null \
+     | grep -v '/agent-' \
+     | while read -r f; do
+         [ -s "$f" ] || continue  # 크기 0 제외
+         MTIME=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f")
+         [ "$MTIME" -ge "$INSTALLED_EPOCH" ] && echo "$f"
+       done)
+   ```
+   `LOWER_BOUND_FAILED=1`이면 discrepancies에 명시한다: *"installed_at 파싱 실패로 설치시각
+   하한선 미적용 — 설치 이전 세션이 후보에 포함됐을 수 있음"*.
+2. **후보 전원을 훑어 매칭되는 파일을 전부 모은다** (첫 매칭에서 멈추지 않는다 — 같은 폴더에서
+   rona-alpha로 여러 스킬을 반복 사용했으면 `practice_id`가 둘 이상의 후보에 우연히 걸릴 수
+   있고, 첫 매칭에서 멈추면 그 다중매칭을 놓친 채 조용히 틀린 파일을 확정하게 된다).
+   **주의: `for f in $CANDIDATES` 형태로 짜면 안 된다** — zsh(macOS 기본 셸)는 unquoted 변수를
+   IFS로 word-split하지 않아 후보가 2개 이상이면 개행이 낀 문자열 전체가 "파일 하나"로 취급되고
+   `grep`이 항상 실패해 매칭 로직 전체가 조용히 무력화된다(실측 확인됨 — 이 세션의 실행 셸도
+   zsh였음). `while read` 로 줄 단위로 읽어야 bash·zsh 양쪽에서 동일하게 동작한다:
+   ```bash
+   MATCHES=$(printf '%s\n' "$CANDIDATES" | while read -r f; do
+     [ -n "$f" ] || continue
+     grep -q "$PRACTICE_ID" "$f" 2>/dev/null && echo "$f"
+   done)
+   if [ -z "$MATCHES" ]; then
+     MATCH_COUNT=0
+   else
+     MATCH_COUNT=$(printf '%s\n' "$MATCHES" | grep -c .)
+   fi
+   ```
+3. **먼저 후보 자체가 있는지 본다.** `CANDIDATES`가 비었으면(세션 디렉토리는 있는데 `.jsonl`이
+   없거나·전부 크기 0이거나·전부 설치시각 이전) 이건 "매칭 0건"과 **다른 상황**이다 — 보여줄
+   후보가 없으므로 파트너에게 고르라고 할 수도 없다. 자동 추출을 포기하고 STEP 3 진술로만 채우되
+   discrepancies에 명시한다: *"설치 이후 세션 기록 없음 — 자동 추출 불가, 진술로 대체"*.
+
+4. 후보가 있으면 매칭 개수에 따라 분기 — **매칭 1건만 조용히 통과, 그 외엔 전부 파트너 확인**.
+   파트너에게 후보를 제시할 때는 **어느 분기든 아래 요약을 그대로** 쓴다(파일명만 보여주면
+   파트너가 고를 수 없다 — 첫 메시지가 있어야 자기 작업을 알아본다):
+   **첫 메시지만 보여주면 안 된다** — 한 세션에서 스킬 A→B 를 연속 진행했으면 그 파일은 항상
+   A의 문장으로 표시되고, B 후기를 남기려는 파트너는 **정답 파일을 "내 세션이 아니네"라며
+   걸러낸다**(실측 라운드 6: 정답 파일이 `경쟁사 가격정책 리서치 스킬 시작할게…`로 표시됨).
+   그래서 **첫 문장과 마지막 문장을 같이** 보여준다 — 세션이 어디서 시작해 어디서 끝났는지가
+   보여야 파트너가 자기 작업을 알아본다.
+   ```bash
+   printf '%s\n' "$CANDIDATES" | while read -r f; do
+     [ -n "$f" ] || continue
+     # `(.message.content // .content)` — 스키마 정규화(2-3의 rona_window 와 같은 이유).
+     # 이게 없으면 요약이 **빈 줄**로 나와, 파일명만 보여주지 말라는 위 원칙이 그대로 깨진다.
+     TEXTS=$(jq -r 'select(.type=="user") | (.message.content // .content)
+       | if type=="string" then . else (.[]? | select(.type=="text") | .text) end' "$f" 2>/dev/null)
+     FIRST=$(printf '%s\n' "$TEXTS" | head -1 | cut -c1-50)
+     LAST=$(printf '%s\n' "$TEXTS" | grep -v '^$' | tail -1 | cut -c1-50)
+     printf '%s | %s\n    처음: %s\n    끝  : %s\n' \
+       "$(basename "$f")" "$(date -r "$f" '+%m/%d %H:%M')" "$FIRST" "$LAST"
+   done
+   ```
+   > **하류로 넘기는 값은 `LATEST_FILES`(개행 구분 목록)다.** 대부분 1줄이지만 재개한 경우
+   > 여러 줄이 된다 — 아래 STEP 2-3의 `rona_main`/`rona_logs`가 이 목록을 훑는다.
+
+   - **정확히 1건**: 그 파일을 `LATEST_FILES`로 자동 채택하고 확인 없이 진행한다
+     (`LATEST_FILES="$MATCHES"`). 단 **"1건이니까
+     안전하다"고 방심하지 마라** — 위 각주대로 `practice_id`는 MCP 호출 인자로 *우연히* 한 줄
+     남았을 뿐일 수 있고, 그 한 줄이 곧 단일 매칭이 된다. 채택 직후 아래를 찍어 **그 파일이
+     이 스킬 전용 세션인지, 다른 작업이 앞에 붙은 세션인지**를 구분한다:
+     ```bash
+     # `$LATEST_FILES` 를 인용 없이 펼치지 마라 — zsh 는 word-split 하지 않아 개행 낀 문자열
+     # 하나를 파일명으로 넘긴다(2번의 CANDIDATES 와 같은 함정). while read 로 훑는다.
+     SEL_CAT=$(printf '%s\n' "$LATEST_FILES" | while read -r f; do [ -n "$f" ] && cat "$f"; done)
+     PRE=$(printf '%s\n' "$SEL_CAT" | jq -c --arg lb "$INSTALLED_AT" \
+       'select((.timestamp // "") != "" and (.timestamp // "") < $lb)' | grep -c .)
+     POST=$(printf '%s\n' "$SEL_CAT" | jq -c --arg lb "$INSTALLED_AT" \
+       'select((.timestamp // "") >= $lb)' | grep -c .)
+     echo "설치 이전 레코드=$PRE / 이후=$POST"
+     ```
+     `PRE`가 0이 아니면 이 세션은 **설치 전부터 돌던 다른 작업을 품고 있다**. STEP 2-3의 시간창이
+     그 구간을 잘라내지만, 사실은 discrepancies에 남긴다: *"세션에 이 스킬 설치 이전 구간
+     N레코드 존재 — 시간창으로 절단함"*. `PRE`가 `POST`보다 훨씬 크면 파트너에게 한 번
+     확인시켜라(*"이 세션에서 이 스킬 말고 다른 작업도 하셨죠?"*).
+   - **0건**: **mtime 최신 파일을 자동으로 집지 마라.** 교차검증이 0건이라는 건 "어느 세션인지
+     모른다"는 뜻이고, 이때 mtime 최신은 방금 열어둔 *전혀 무관한* 작업일 가능성이 높다(실측
+     사례: 후보 최상위가 "휴가 신청서 써줘" 세션이었다). 위 후보 요약을 그대로 보여주고
+     **"어느 세션에서 이 스킬을 진행하셨나요?"** 로 직접 고르게 한다. 목록에 없다고 하면
+     자동 추출을 포기하고 STEP 3 인터뷰 진술로만 채운다.
+     **discrepancies에 반드시 명시**: *"세션 파일 자동 매칭 실패(내용 교차검증 불통과) —
+     파트너 선택으로 확정"* 또는 *"…— 자동 추출 포기, 진술로 대체"*.
+     > 참고: `practice_id`는 원래 디스크의 마커 파일에 있는 값이라 대화 로그에 꼭 등장한다는
+     > 보장이 없다(claim 응답·MCP 호출 인자로 우연히 남는 경우가 많을 뿐). 그래서 0건은
+     > "이 폴더가 틀렸다"가 아니라 **흔히 있는 정상 상황**으로 취급하고 사람에게 묻는다.
+   - **2건 이상**: mtime 최신을 조용히 고르지 마라. 다만 **"둘 중 하나가 틀렸다"고 단정하지도
+     마라** — 다중매칭의 가장 흔한 원인은 다른 스킬이 섞인 게 아니라 **한 스킬을 중간에 끊었다가
+     이어서 한 것**이고, 그때 정답은 "둘 다"다. 그래서 **양자택일이 아니라 세 갈래로** 묻는다.
+     위 후보 요약(매칭된 것만)을 보여주고:
+     ```
+     이 스킬을 언급한 세션이 N개 있어요. 어느 쪽인가요?
+
+       [1] <파일1 요약>
+       [2] <파일2 요약>
+       [전부] 한 번에 못 끝내서 중간에 끊었다가 이어서 했어요 (여러 세션에 걸침)
+     ```
+     - 번호 선택 → `LATEST_FILES`는 그 한 줄. discrepancies: *"세션 파일 다중매칭(N건) —
+       파트너 선택으로 확정"*
+     - **"전부" 선택 → `LATEST_FILES="$MATCHES"` (매칭된 전부를 합본으로 추출한다).**
+       discrepancies: *"세션 N개에 걸친 작업 — 파트너 확인 후 합본 추출"*
+
+     > **"전부" 갈래가 없으면 절반이 조용히 사라진다.** 실측(라운드 7): 재개 세션에서 뒤쪽
+     > 파일만 채택하자 도구 20회 중 5회(25%), 외부 출처 2건 중 **1건(50%)**, 검색어 3건 중
+     > 1건, 시나리오 1개가 유실됐다. 유실된 게 하필 **1차 세션의 초기 탐색 구간**(택소노미
+     > 리서치 20분)이라, 후기에는 "이 스킬은 외부 리서치가 별로 필요 없었다"는 **정반대
+     > 결론**이 적재된다.
+     >
+     > 재개 여부는 로그로 먼저 확인할 수 있다 — 한쪽 끝 발화가 "이따 이어서 하자"류이고
+     > 다른 쪽 첫 발화가 "아까 하던 거 이어서"류이면, 또는 `get_progress`(재개 시에만 나오는
+     > 호출)가 뒤쪽 파일에만 있으면 재개가 거의 확실하다. 그 경우 `[전부]`를 기본값으로
+     > 추천해 제시한다.
+
+5. **`LATEST_FILES` 확정 후, 마지막 활동이 얼마나 오래됐는지 본다.** 이 스킬은 "작업 종료 후
+   5분 안" 회수를 전제로 설계됐는데(§사용 시점), 지금까지의 검사는 `installed_at` **하한**뿐이라
+   *며칠 지난 작업*도 그대로 통과한다.
+   ```bash
+   # 서브에이전트까지 포함해 "가장 늦은" 활동을 본다 — 메인만 보면 서브에이전트가 더 늦게
+   # 끝난 세션에서 실제보다 오래 지난 것으로 계산된다.
+   LAST_TS=$(printf '%s\n' "$LATEST_FILES" | while read -r f; do
+       [ -n "$f" ] || continue
+       cat "$f"
+       SUB="$SESSION_DIR/$(basename "$f" .jsonl)/subagents"
+       [ -d "$SUB" ] && find "$SUB" -name 'agent-*.jsonl' -exec cat {} + 2>/dev/null
+     done | jq -r '.timestamp // empty' | sort | tail -1)
+   LAST_CLEAN=$(printf '%s' "$LAST_TS" | sed 's/\.[0-9]*Z$/Z/')
+   LAST_EPOCH=$(date -u -d "$LAST_CLEAN" +%s 2>/dev/null \
+     || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$LAST_CLEAN" +%s 2>/dev/null)
+   # ⚠️ **분 단위로 찍어라.** 시간 단위(/3600)로 절삭하면 1분도 59분도 똑같이 "0시간"이 되어
+   #    바로 아래 30분 임계를 판정할 수 없다(실측 라운드 9: 12분이 "0시간 경과"로 출력됐다).
+   [ -n "$LAST_EPOCH" ] && echo "마지막 활동 이후 $(( ( $(date +%s) - LAST_EPOCH ) / 60 ))분 경과"
+   ```
+   **경과 시간은 길든 짧든 항상 discrepancies에 기록한다**(*"작업 종료 후 N시간 경과 후 회수"*).
+   분석 단계에서 갓 나온 후기와 하루 지난 후기를 구분할 근거가 META에 남아야 하기 때문이다.
+   그리고 **30분을 넘으면** STEP 3 인터뷰 첫 문장에 **시점 앵커**를 넣는다(*"어제 오후에
+   마무리하신 그 작업 기준으로 여쭤볼게요"*) — 앵커 없이 물으면 파트너가 다른 작업과 뒤섞어
+   답한다(telescoping).
+
+   > **임계를 높게 잡으면 안 되는 이유.** 파트너의 "방금"은 믿을 수 없다. 실측 라운드 7에서는
+   > "방금 끝냈어요"가 실제로 **19시간 전**이었고(그 사이 같은 폴더에서 무관한 세션이 한 번 더
+   > 돌았다), 라운드 8에서는 **4시간 전**이었다. 4시간짜리는 웬만한 임계 아래로 조용히
+   > 통과하는데, 회상 오차는 이미 충분히 크다. 파트너가 "방금"이라 느끼는 건 그 세션의 마지막
+   > 발화가 *"후기 남길게"* 였던 탓이지 실제 경과 시간이 아니다.
+
+> **세션 내 구간 절단 — 어디까지 해결됐나**: 위 로직은 "어느 *파일*이 이 스킬 세션인가"까지만
+> 하드닝한다. 한 세션 안에서 스킬 A→B를 연속 진행한 경우는 STEP 2-3의 **`installed_at` 레코드
+> 단위 시간창**이 A 구간을 잘라낸다(아래 `rona_logs`/`rona_main` 참조). 다만 **상한이 없어서**
+> B를 먼저 하고 A를 나중에 한 순서는 여전히 섞이고, 같은 스킬을 재설치했으면 앞 구간이 잘린다.
+> 파트너가 "그 전에/그 후에 다른 작업도 했는데"라고 말하면 STEP 2-3 결과를 그대로 믿지 말고
+> 직접 구간을 확인시켜라.
 
 ### 2-3. 4차원 중 자동 추출 가능한 3개
 
+> **추출 결과가 0행이면 "도구를 안 썼다"로 해석하지 마라.** 아래 jq들은 Claude Code jsonl
+> 스키마(`{"type":"assistant","message":{"content":[{"type":"tool_use",...}]}}`)를 전제한다.
+> 파일이 다른 CLI 산출이거나 스키마가 바뀌면 jq는 **종료코드 0에 빈 결과**를 내므로 실패가
+> 실패로 보이지 않는다. (1)번 도구 집계가 0행이면 거의 확실히 추출 실패다 — 스킬을 진행했다면
+> 도구 호출이 0일 수 없기 때문이다. 이 경우:
+> 1. discrepancies에 명시: *"세션 로그 자동 추출 실패(스키마 불일치 추정) — 도구·출처는
+>    파트너 진술로 대체"*
+> 2. 자동 추출을 포기하고 STEP 3 인터뷰에서 파트너에게 직접 물어 채운다(빈 값으로 제출하지 마라).
+
+> **⚠️ 서브에이전트 로그를 반드시 합쳐라 (안 합치면 오케스트레이션 실습이 통째로 안 보인다).**
+> 메인 세션 jsonl에는 서브에이전트 파견이 `Agent`(또는 `Task`) 호출 **1줄**로만 남고, 그
+> 서브에이전트가 실제로 쓴 도구·조회한 URL은 **다른 파일**에 있다:
+> `$SESSION_DIR/<세션UUID>/subagents/agent-*.jsonl`
+> 실측 예: 메인 세션엔 `Agent 8회`만 보이는데 그 서브에이전트들이 실제론 Bash 42·Read 3·Write 1
+> (총 46회)을 썼다 — 메인만 집계하면 이게 전부 0으로 계산된다. 조사원 파견형 스킬에서는
+> **외부 URL 대부분이 서브에이전트 쪽에만 있으므로** (2)번 외부 출처도 같이 비게 된다.
+>
+> 그래서 STEP 2-3의 모든 추출은 아래 `rona_logs`(메인 + 서브에이전트 합본) 스트림에 대해 돌린다:
+> ```bash
+> # 공통 필터: installed_at 시간창 + **timestamp 오름차순 정렬**.
+> # 정렬을 빼면 안 되는 이유는 아래 "왜 정렬하는가" 참조.
+> rona_window() {
+>   jq -r --arg lb "$INSTALLED_AT" '
+>       select((.timestamp // "") == "" or (.timestamp // "") >= $lb)
+>       # 스키마 정규화 — 이 한 줄이 아래 모든 추출식을 살린다.
+>       # `message` 래퍼 없이 `content` 가 최상위에 오는 산출이 있다(구버전·타 CLI·포맷 변경).
+>       # 그 경우 `.message.content[]?` 는 종료코드 0에 **빈 결과**를 내므로 실패가 실패로
+>       # 보이지 않는다. 여기서 한 번 감싸주면 하류를 하나도 안 고쳐도 된다.
+>       | (if has("message") then . else . + {message: {content: .content}} end)
+>       | "\(.timestamp // "")\t\(tostring)"' \
+>     | awk -F'\t' 'BEGIN{OFS="\t"} {if($1==""){$1=prev}else{prev=$1}; print}' \
+>     | sort -s -k1,1 | cut -f2-
+> }
+>
+> # 메인 세션만 (서브에이전트 제외). 재개했으면 LATEST_FILES 에 여러 줄이 들어 있다.
+> # `$LATEST` 를 직접 jq 에 물리지 마라 — 시간창·정렬·재개분이 전부 빠진다.
+> rona_main() {
+>   printf '%s\n' "$LATEST_FILES" | while read -r f; do
+>     [ -n "$f" ] && cat "$f"
+>   done | rona_window
+> }
+>
+> # 메인 + 각 세션의 서브에이전트 합본.
+> rona_logs() {
+>   { printf '%s\n' "$LATEST_FILES" | while read -r f; do
+>       [ -n "$f" ] || continue
+>       cat "$f"
+>       # glob(`agent-*.jsonl`) 대신 find — zsh 는 매칭 0건이면 "no matches found" 를 stderr 로
+>       # 뱉어 실행자가 실패로 오인한다(파일 없는 경우가 오히려 정상이다). find 는 조용하고,
+>       # 나란히 있는 `agent-*.meta.json` 도 정확히 제외한다.
+>       SUBAGENT_DIR="$SESSION_DIR/$(basename "$f" .jsonl)/subagents"
+>       [ -d "$SUBAGENT_DIR" ] && find "$SUBAGENT_DIR" -name 'agent-*.jsonl' -exec cat {} + 2>/dev/null
+>     done
+>   } | rona_window
+>   return 0
+> }
+> ```
+>
+> **왜 정렬하는가 (빼면 조용히 틀린 시나리오가 생긴다).** `cat A B 서브에이전트` 는 **파일 연결
+> 순서**일 뿐 시간순이 아니다. 그런데 아래 (3)은 `uniq -c` 로 *인접* 반복을 세고 timestamp 차이로
+> 소요시간을 추정한다 — 둘 다 시간순을 전제한다. 실측(라운드 7): 정렬 없이 돌리자 스트림에
+> `08:10Z → 07:26Z` 역행이 생겼고, `Bash 4회 연속`이 잡혔는데 실제로는 `02:11Z` 1회와
+> `07:40~07:46Z` 3회로 **5시간 반 떨어진 별개 호출**이었다. 파일 경계를 넘어 "연속"이 조작된 것이다.
+> 그 가짜 신호는 STEP 3-3 drill 선별 1순위(재시도 횟수)에 그대로 들어가, 파트너에게 **없던 막힘을
+> 되묻게** 만든다.
+>
+> **중간의 `awk` 는 timestamp 없는 레코드를 제자리에 붙잡아 두는 장치다(빼지 마라).** 정렬 키가
+> 빈 문자열이면 그 레코드는 **무조건 스트림 맨 앞으로** 튀어나가, 정렬로 지키려던 인접성이
+> 그 지점에서 도로 깨진다(실측 라운드 9 재현: `AAA(02:40) → BBB(ts없음) → CCC(02:50)` 를 넣자
+> `BBB → AAA → CCC` 로 나왔다). awk 가 직전 레코드의 timestamp를 물려주면 원래 자리에 남는다
+> — `sort -s`(안정 정렬)라 키가 같으면 입력 순서가 보존되기 때문이다.
+>
+> **`installed_at` 레코드 단위 하한이 붙어 있는 이유 (지우지 마라).** 2-2의 하한선은 *파일*
+> 단위(mtime)라, 한 세션 파일 안에서 스킬 A→B 를 연속 진행한 경우를 전혀 못 막는다. 마커의
+> `installed_at`은 "이 스킬이 존재하기 시작한 시각"이므로 **그 이전 레코드는 정의상 이 스킬의
+> 것일 수 없다** — 그래서 레코드 단위로 한 번 더 자른다. 실측(2026-07 라운드 6): 이 절단이
+> 없으면 A→B 세션에서 도구 33회 중 27회(82%)와 외부 URL 7건·검색어 4건 **전량**이 다른 스킬
+> 것으로 섞여 들어갔고, 이 한 줄을 붙이자 정확히 B의 6회만 남았다.
+> 비교는 ISO8601 문자열 사전순이며, 마커와 세션 timestamp 둘 다 밀리초를 포함해 형식이
+> 같으므로 안전하다. `timestamp`가 없는 레코드는 통과시킨다(메타성 레코드 유실 방지).
+>
+> **이 절단으로도 남는 것 (정직하게)**: 상한이 없어서 **B를 먼저 하고 A를 나중에** 한 순서에서는
+> A가 그대로 섞인다. 또 같은 스킬을 두 번 설치했으면 나중 `installed_at`이 앞 구간을 잘라먹는다.
+> 그래서 아래 (1) 도구 집계 결과가 파트너 진술과 크게 어긋나면 그대로 믿지 말고 확인시켜라.
+> 서브에이전트 도구는 후기에 별도 표기한다 — 파트너 본인이 직접 쓴 것과, 위임해서 대신
+> 굴린 것은 다른 사실이기 때문이다(4차원 2번 "노력의 형태"에 직결).
+
 #### (1) 사용한 도구·스킬·방법론
 
-**출처**: `tool_use` 블록 자동 집계
+**출처**: `tool_use` 블록 자동 집계 (메인 + 서브에이전트)
 
 ```bash
-jq -r 'select(.type == "assistant") | .message.content[]?
-  | select(.type == "tool_use") | .name' "$LATEST" \
+# 합본 집계
+rona_logs | jq -r 'select(.type == "assistant") | .message.content[]?
+  | select(.type == "tool_use") | .name' \
+  | sort | uniq -c | sort -rn
+
+# 메인 세션만 — 합본과의 차이가 곧 "서브에이전트에 위임된 몫"이다.
+# (`"$LATEST"` 를 직접 물리지 마라 — 시간창이 빠진다. 위 rona_main() 을 쓴다.)
+rona_main | jq -r 'select(.type == "assistant") | .message.content[]?
+  | select(.type == "tool_use") | .name' \
   | sort | uniq -c | sort -rn
 ```
+
+> **"메인 = 파트너가 직접 한 것"으로 읽지 마라.** 메인 세션의 도구 호출도 대부분 Claude가
+> 실행한 것이고, 파트너는 문장 한 줄을 쳤을 뿐일 수 있다. 이 구분은 *사람 vs AI*가 아니라
+> **본체 세션 vs 위임된 서브에이전트**의 구분이다. 4차원 2번(파트너가 채운 노력)은 이 숫자가
+> 아니라 STEP 3 인터뷰 진술로 판단해야 한다.
 
 **정리 형식**:
 ```markdown
@@ -115,14 +426,31 @@ jq -r 'select(.type == "assistant") | .message.content[]?
 **출처**: `WebSearch` / `WebFetch` 결과 + 사용자 메시지에 등장한 URL/문서 인용
 
 ```bash
-# 사용자 메시지에서 URL 추출
-jq -r 'select(.type == "user") | .message.content[]?
-  | select(.type == "text") | .text' "$LATEST" \
-  | grep -oE 'https?://[^ )]+' | sort -u
+# 사용자 메시지에서 URL 추출 (파트너가 직접 던진 링크).
+# user 의 .message.content 는 배열일 때도, **평문 문자열**일 때도 있다(실측: 배열 152 / 문자열 11).
+# `.content[]?` 만 쓰면 문자열 쪽이 조용히 통째로 버려져 링크가 유실된다 — 반드시 정규화한다.
+# (시간창 적용 — 다른 스킬 구간에서 파트너가 던진 사내 위키 링크가 이번 스킬 후기로
+#  넘어오면 마스킹으로도 못 고친다. "이 스킬이 사내 위키 접근을 요구한다"는 귀속 오류가
+#  그대로 남기 때문이다. 실측 라운드 6에서 관측된 오염 경로다.)
+rona_main | jq -r 'select(.type == "user") | .message.content
+  | if type == "string" then . else (.[]? | select(.type == "text") | .text) end' \
+  | grep -oE 'https?://[A-Za-z0-9._~:/?#@!$&*+,;=%-]+' \
+  | sed -E 's/[.,;:!?)]+$//' | sort -u
+# URL 경계에 주의 — `[^ )]+` 로 끊으면 **한국어 조사와 문장부호가 URL에 들러붙는다.**
+# 한국어는 URL 뒤에 공백 없이 조사를 붙이는 게 정상 표기라(`…/2026-06에서`), 그 상태로
+# `sort -u` 를 타면 같은 링크가 `…/2026-06`·`…/2026-06에서`·`…/2026-06,` 로 갈라져
+# **출처 1건이 3건으로 부풀려진다**(실측 라운드 9 재현). 그래서 URL 허용문자만 받고
+# 끝에 남은 문장부호를 떼어낸다.
 
-# WebFetch 호출 URL
-jq -r 'select(.type == "assistant") | .message.content[]?
-  | select(.type == "tool_use" and .name == "WebFetch") | .input.url' "$LATEST"
+# 실제로 가져온 URL (WebFetch) — 서브에이전트(조사원) 포함해야 한다.
+# 조사원 파견형 스킬은 외부 출처가 거의 전부 서브에이전트 쪽에만 있다.
+rona_logs | jq -r 'select(.type == "assistant") | .message.content[]?
+  | select(.type == "tool_use" and .name == "WebFetch") | .input.url' | sort -u
+
+# 검색 키워드 (WebSearch) — 이건 "출처"가 아니라 "무엇을 찾으려 했는가"다.
+# 위 URL 목록과 절대 합치지 마라: 합치면 실제 출처 3건이 5건으로 부풀려진다(실측 확인).
+rona_logs | jq -r 'select(.type == "assistant") | .message.content[]?
+  | select(.type == "tool_use" and .name == "WebSearch") | .input.query' | sort -u
 ```
 
 **정리 형식**:
@@ -141,11 +469,57 @@ jq -r 'select(.type == "assistant") | .message.content[]?
 자동 추출은 **휴리스틱**: 시간 순으로 묶어 "처음 시도 → 막힘 → 우회"의 3단 시나리오 N개를 만든다.
 
 ```bash
-# 에러를 포함한 toolResult 블록
-jq -r 'select(.type == "user") | .message.content[]?
+# 에러를 포함한 toolResult 블록 (서브에이전트 안에서 난 실패도 포함).
+# `.timestamp` 는 최상위 레코드에 있고 tool_result 블록엔 없다 — content[] 로 내려가기 *전에*
+# `as $ts` 로 잡아둬야 한다. (`{timestamp: .}` 로 쓰면 블록 자신이 복제될 뿐이라 소요시간
+# 추정이 불가능해진다 — 실측 확인된 함정.)
+rona_logs | jq -c 'select(.type == "user")
+  | .timestamp as $ts
+  | .message.content[]?
   | select(.type == "tool_result" and (.content // "" | tostring | test("error|Error|ERROR|failed|Failed")))
-  | {timestamp: ., text: .content}' "$LATEST" | head -20
+  | {timestamp: $ts, text: (.content | tostring)}' | head -20
 ```
+
+> **에러 jq만 돌리고 끝내지 마라 — 그러면 "조용한 실패"가 통째로 사라진다.** 위 명령은 출처
+> 3가지 중 *에러 메시지* 하나만 잡는다. 도구는 성공(exit 0)했는데 결과가 틀려서 파트너가
+> "이거 아닌데, 다시"라고만 한 경우 **0행**이 나오고, 그러면 STEP 3-3의 drill 판정이 "로그
+> 깨끗함"으로 기울어 `drill_skipped=true`가 잘못 기록된다. 이 스킬이 가장 중요하다고 선언한
+> *만족도와 실제 노력의 갭* 신호를 정확히 그 상황에서 놓치는 것이다. 아래 둘을 같이 돌린다:
+
+```bash
+# (a) 파트너의 전환·불만 발화 — 에러 없이 조용히 틀린 경우는 이것만 남는다.
+rona_main | jq -r 'select(.type == "user") | .timestamp as $ts | .message.content
+  | (if type == "string" then . else ([.[]? | select(.type=="text") | .text] | join(" ")) end)
+  | select(test("안 ?되|안됐|다시|틀렸|아닌데|아니고|말고|바꿔|대신|이상해|왜 이|다른 방법|직접 (했|하)"))
+  | "\($ts) \(.[0:100])"'
+
+# (b) 같은 도구 연속 반복 — "막혀서 계속 두드린" 구간. 3회 이상 연속이면 시나리오 후보다.
+# **반드시 시간 구간을 같이 찍는다.** 이름만 세면 사이에 낀 발화·수 시간의 공백이 전부
+# 무시돼, 몇 시간 떨어진 별개 호출이 "연속 3회"로 잡힌다(실측 라운드 9 재현: 3시간 20분
+# 떨어지고 주제까지 바뀐 Read 3건이 "3회 연속"으로 나왔다). 구간이 보이면 실행자가
+# 눈으로 걸러낼 수 있다.
+rona_logs | jq -r 'select(.type == "assistant") | .timestamp as $t | .message.content[]?
+  | select(.type == "tool_use") | "\(.name)\t\($t)"' \
+  | awk -F'\t' '
+      function flush(){ if(n>=3) printf "%d 회 연속 — %s (%s ~ %s)\n", n, cur, s, e }
+      NR==1 { cur=$1; n=1; s=$2; e=$2; next }
+      $1==cur { n++; e=$2; next }
+      { flush(); cur=$1; n=1; s=$2; e=$2 }
+      END { flush() }'
+```
+
+> (a)의 정규식은 **한국어 전환 신호 휴리스틱**이라 과탐·미탐이 다 있다. 잡힌 줄은 시나리오
+> *후보*일 뿐이니 앞뒤 맥락을 읽고 진짜 전환인지 판단해 쓴다. 0행이라고 "안 막혔다"로
+> 단정하지 마라 — 파트너가 말없이 직접 손봤을 수 있다(그건 STAGE 1 [2/3]에서 받는다).
+>
+> **(b)의 "연속 N회"를 곧바로 "막힘"으로 읽지 마라 — 성공한 순회가 훨씬 많다.** 먼저 같이 찍힌
+> **시간 구간**을 본다. 구간이 몇 시간에 걸쳐 있으면 그건 연속 호출이 아니라 그냥 그 도구를
+> 띄엄띄엄 여러 번 쓴 것이다(막힘 아님). 구간이 짧아도, 같은 도구가 실측(라운드 7): `6회 연속 — Read`가 잡혔는데
+> 서브에이전트가 `sample_0.txt`~`sample_5.txt`를 순서대로 정독한 것이었고, 정작 진짜 실패
+> (yaml 파싱)는 (3a)에 1건으로만 있었다. **판정 기준은 "반복 그 자체"가 아니라 그 구간에
+> (3a) 에러나 (a) 전환 발화가 겹치는가**다. 겹치지 않는 반복(Read/Glob 순회, 배치 처리)은
+> 시나리오에서 뺀다 — 안 그러면 최대 5개 슬롯을 가짜 막힘이 차지해 진짜 실패가 밀려나고,
+> drill이 *"샘플 6개 읽는 데 막히셨죠?"* 로 나가 파트너를 혼란시킨다.
 
 **정리 형식**:
 ```markdown
@@ -161,7 +535,10 @@ jq -r 'select(.type == "user") | .message.content[]?
 
 ### 2-4. 출력 — 중간 산출물
 
-위 3개를 묶어 `./.rona-review-auto.md` 임시 파일로 저장 (다음 STEP에서 인터뷰 보강용).
+위 3개를 묶어 `./.rona-review-auto-<practice_id 앞 8자>.md` 임시 파일로 저장 (다음 STEP에서 인터뷰 보강용).
+**파일명에 practice_id를 넣는 이유**: 같은 폴더에서 여러 로나 스킬을 쓰면 고정 파일명은 직전
+스킬의 리뷰 잔여물을 이번 리뷰가 읽어버려 **다른 스킬 데이터로 오염**된다. 같은 이름이 이미
+있으면 이번 실행 산출로 **덮어쓴다**(이어붙이지 마라 — 재실행 시 중복 누적).
 
 ---
 
@@ -194,7 +571,7 @@ jq -r 'select(.type == "user") | .message.content[]?
 
 ### 3-2. STAGE 1 — 자기기입 (2~3분, 3문항)
 
-STEP 2 자동 추출(`./.rona-review-auto.md`) 저장 직후, 결과는 보여주지 말고 곧장 STAGE 1로 들어간다.
+STEP 2 자동 추출(`./.rona-review-auto-<practice_id 앞 8자>.md`) 저장 직후, 결과는 보여주지 말고 곧장 STAGE 1로 들어간다.
 
 **[자기기입 1/3] 맞춤 정렬 ④** — 다음 문구를 그대로 파트너에게 출력하고 응답 대기:
 
